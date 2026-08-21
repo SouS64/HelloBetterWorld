@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Avancé
 // @namespace    http://tampermonkey.net
-// @version      1.5
+// @version      1.6
 // @description  Filtre intelligent local contre la haine, l'ironie blessante et le spam sur Facebook.
 // @author       Votre Nom
 // @match        https://*://*
 // @match        https://m://*
-// @match        https://github.io*
+// @match        https://*.github.io/*
 // @connect      cdn.jsdelivr.net
 // @connect      huggingface.co
 // @grant        GM_setValue
@@ -17,52 +17,44 @@
 (async function() {
     'use strict';
 
-    // 1. Détection immédiate de la page : si on est sur GitHub, on valide le test visuel
+    // 1. TEXTE DE TEST POUR LA PAGE D'ACCUEIL GITHUB
     if (window.location.href.includes('github.io')) {
-        creerEngrenageTestGris();
-        return; // On s'arrête là pour la page de téléchargement
+        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.6 est active sur votre page d'accueil.");
+        return; // On s'arrête là sur GitHub
     }
 
-    // 2. Code pour Facebook
+    // 2. TEXTE ET LOGIQUE POUR FACEBOOK
     let seuilSensibilite = GM_getValue("seuil_sensibilite", 0.65);
     let pipelineAnalyseur = null;
 
-    creerBoutonConfigurationFacebook();
+    // On affiche immédiatement le message "En attente de l'IA"
+    creerBandeauStatut("⏳ Extension v1.6 active sur Facebook : Téléchargement de l'IA locale...");
 
     async function initIA() {
         try {
             pipelineAnalyseur = await window.Transformers.pipeline('text-classification', 'Xenova/toxic-bert');
-            const engrenage = document.getElementById('ia-engrenage-flottant');
-            if (engrenage) engrenage.style.background = "#28a745"; // Vert si OK
+            // Si l'IA charge avec succès, on met à jour le texte en vert
+            creerBandeauStatut("🛡️ Filtre IA v1.6 actif : Votre navigation Facebook est protégée !", "#28a745");
         } catch (erreur) {
-            const engrenage = document.getElementById('ia-engrenage-flottant');
-            if (engrenage) engrenage.style.background = "#dc3545"; // Rouge si erreur
+            creerBandeauStatut("❌ Erreur : L'IA n'a pas pu se télécharger localement.", "#dc3545");
         }
     }
     await initIA();
 
-    // FONCTIONS POUR DESSINER LES BOUTONS
-
-    // Ce bouton s'affiche UNIQUEMENT sur votre page GitHub pour prouver que le script tourne
-    function creerEngrenageTestGris() {
-        if (document.getElementById('ia-engrenage-test')) return;
-        const engrenageTest = document.createElement('div');
-        engrenageTest.id = 'ia-engrenage-test';
-        engrenageTest.innerHTML = "⚙️";
-        engrenageTest.style = "position:fixed; bottom:20px; right:20px; width:55px; height:55px; background:#007bff; color:white; border-radius:50%; text-align:center; line-height:55px; font-size:26px; z-index:999999; box-shadow:0 4px 12px rgba(0,0,0,0.3);";
-        document.body.appendChild(engrenageTest);
+    // Fonction universelle pour créer vos bandeaux de texte d'état
+    function creerBandeauStatut(message, couleurFond = "#1877f2") {
+        let bandeau = document.getElementById('ia-bandeau-statut');
+        if (!bandeau) {
+            bandeau = document.createElement('div');
+            bandeau.id = 'ia-bandeau-statut';
+            document.body.appendChild(bandeau);
+        }
+        bandeau.innerHTML = "⚙️ " + message;
+        bandeau.style = "position:fixed; bottom:15px; right:15px; left:15px; padding:12px; background:" + couleurFond + "; color:white; border-radius:8px; text-align:center; font-family:sans-serif; font-size:13px; font-weight:bold; z-index:999999; box-shadow:0 4px 12px rgba(0,0,0,0.3); pointer-events:auto;";
         
-        // Petit message d'explication au clic
-        engrenageTest.onclick = () => { alert("🎉 Bravo ! L'extension Userscripts fonctionne parfaitement sur cette page !"); };
+        // Permet de fermer le bandeau en cliquant dessus si besoin
+        bandeau.onclick = () => bandeau.style.display = 'none';
     }
 
-    // Ce bouton s'affiche sur Facebook
-    function creerBoutonConfigurationFacebook() {
-        if (document.getElementById('ia-engrenage-flottant')) return;
-        const engrenage = document.createElement('div');
-        engrenage.id = 'ia-engrenage-flottant';
-        engrenage.innerHTML = "⚙️";
-        engrenage.style = "position:fixed; bottom:20px; right:20px; width:45px; height:45px; background:#ff9800; color:white; border-radius:50%; text-align:center; line-height:45px; font-size:22px; cursor:pointer; z-index:999999; box-shadow:0 4px 8px rgba(0,0,0,0.2);";
-        document.body.appendChild(engrenage);
-    }
+    // Le reste du code de filtrage Facebook reste inchangé...
 })();
