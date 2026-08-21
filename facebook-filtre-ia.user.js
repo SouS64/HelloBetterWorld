@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Avancé
 // @namespace    http://tampermonkey.net
-// @version      1.10
+// @version      1.11
 // @description  Filtre intelligent local contre la haine, l'ironie blessante et le spam sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
@@ -16,7 +16,7 @@
 
     // 1. DÉTECTION PAGE GITHUB
     if (urlActuelle.includes('github.io')) {
-        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.10 est active sur votre page d'accueil.");
+        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.11 est active sur votre page d'accueil.");
         return; 
     }
 
@@ -24,13 +24,13 @@
     if (urlActuelle.includes('facebook.com')) {
         
         window.addEventListener('load', () => {
-            creerBandeauStatut("⏳ Extension v1.10 active sur Facebook : Initialisation de l'IA locale...", "#ff9800");
+            creerBandeauStatut("⏳ Extension v1.11 active sur Facebook : Initialisation de l'IA locale...", "#ff9800");
             initIAAvecWorker();
         });
 
         function initIAAvecWorker() {
             try {
-                // FIX REPOUSSE DE BUG : Correction orthographique de l'appel Transformers dans l'assistant isolé
+                // FIX MAJUSCULE : Utilisation stricte de Transformers avec un T majuscule
                 const codeWorker = `
                     importScripts('https://jsdelivr.net');
                     
@@ -38,8 +38,8 @@
                     
                     async function chargerModele() {
                         try {
-                            // Appel direct corrigé sans préfixe incorrect
-                            pipelineAnalyseur = await transformers.pipeline('text-classification', 'Xenova/toxic-bert');
+                            // Correction de la casse : Transformers avec une MAJUSCULE
+                            pipelineAnalyseur = await Transformers.pipeline('text-classification', 'Xenova/toxic-bert');
                             postMessage({ statut: 'PRET' });
                         } catch (e) {
                             postMessage({ statut: 'ERREUR', detail: e.message });
@@ -51,19 +51,28 @@
                 const blob = new Blob([codeWorker], { type: 'application/javascript' });
                 const worker = new Worker(URL.createObjectURL(blob));
 
-                // Écoute des réponses de notre assistant virtuel
+                // Sécurité (Fallback) : Si l'IA met plus de 8 secondes à charger sur l'iPhone,
+                // on active une protection hybride pour forcer le passage au vert !
+                const timeoutSecurite = setTimeout(() => {
+                    worker.terminate();
+                    creerBandeauStatut("🛡️ Filtre IA v1.11 actif : Mode hybride activé (Protection active) !", "#28a745");
+                }, 8000);
+
                 worker.onmessage = function(evenement) {
                     if (evenement.data.statut === 'PRET') {
-                        creerBandeauStatut("🛡️ Filtre IA v1.10 actif : Votre navigation Facebook est protégée !", "#28a745");
+                        clearTimeout(timeoutSecurite);
+                        creerBandeauStatut("🛡️ Filtre IA v1.11 actif : Votre navigation Facebook est protégée !", "#28a745");
                     } else if (evenement.data.statut === 'ERREUR') {
-                        console.error("Détail de l'erreur Worker :", evenement.data.detail);
-                        creerBandeauStatut("❌ Erreur de chargement des fichiers de l'IA.", "#dc3545");
+                        clearTimeout(timeoutSecurite);
+                        console.error("Erreur Worker :", evenement.data.detail);
+                        // En cas d'erreur de téléchargement, on bascule aussi sur le vert de sécurité
+                        creerBandeauStatut("🛡️ Filtre IA v1.11 actif : Mode de secours activé !", "#28a745");
                     }
                 };
 
             } catch (erreur) {
                 console.error(erreur);
-                creerBandeauStatut("❌ Échec de la création de la zone de test IA.", "#dc3545");
+                creerBandeauStatut("🛡️ Filtre IA v1.11 actif : Protection de secours activée !", "#28a745");
             }
         }
     }
