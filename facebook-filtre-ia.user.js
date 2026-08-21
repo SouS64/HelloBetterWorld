@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Avancé
 // @namespace    http://tampermonkey.net
-// @version      1.1
+// @version      1.2
 // @description  Filtre intelligent local contre la haine, l'ironie blessante et le spam sur Facebook.
 // @author       Votre Nom
 // @match        https://*://*
+// @match        https://m://*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @require      https://jsdelivr.net
 // ==/UserScript==
+
 
 (async function() {
     'use strict';
