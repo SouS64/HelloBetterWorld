@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Avancé
 // @namespace    http://tampermonkey.net
-// @version      2.1
+// @version      1.10
 // @description  Filtre intelligent local contre la haine, l'ironie blessante et le spam sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
@@ -16,7 +16,7 @@
 
     // 1. DÉTECTION PAGE GITHUB
     if (urlActuelle.includes('github.io')) {
-        creerBandeauStatut("✅ Ça fonctionne ! L'extension v2.1 est active sur votre page d'accueil.");
+        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.10 est active sur votre page d'accueil.");
         return; 
     }
 
@@ -24,27 +24,28 @@
     if (urlActuelle.includes('facebook.com')) {
         
         window.addEventListener('load', () => {
-            creerBandeauStatut("⏳ Extension v2.1 active sur Facebook : Initialisation de l'IA locale...", "#ff9800");
+            creerBandeauStatut("⏳ Extension v1.10 active sur Facebook : Initialisation de l'IA locale...", "#ff9800");
             initIAAvecWorker();
         });
 
         function initIAAvecWorker() {
             try {
-                // FIX CRUCIAL IOS : On crée un mini-script virtuel isolé (Blob) pour contourner le blocage CSP de Facebook
+                // FIX REPOUSSE DE BUG : Correction orthographique de l'appel Transformers dans l'assistant isolé
                 const codeWorker = `
                     importScripts('https://jsdelivr.net');
                     
                     let pipelineAnalyseur = null;
                     
-                    async function chargerModere() {
+                    async function chargerModele() {
                         try {
-                            pipelineAnalyseur = await init.Transformers.pipeline('text-classification', 'Xenova/toxic-bert');
+                            // Appel direct corrigé sans préfixe incorrect
+                            pipelineAnalyseur = await transformers.pipeline('text-classification', 'Xenova/toxic-bert');
                             postMessage({ statut: 'PRET' });
                         } catch (e) {
                             postMessage({ statut: 'ERREUR', detail: e.message });
                         }
                     }
-                    chargerModere();
+                    chargerModele();
                 `;
 
                 const blob = new Blob([codeWorker], { type: 'application/javascript' });
@@ -53,8 +54,9 @@
                 // Écoute des réponses de notre assistant virtuel
                 worker.onmessage = function(evenement) {
                     if (evenement.data.statut === 'PRET') {
-                        creerBandeauStatut("🛡️ Filtre IA v2.1 actif : Votre navigation Facebook est protégée !", "#28a745");
+                        creerBandeauStatut("🛡️ Filtre IA v1.10 actif : Votre navigation Facebook est protégée !", "#28a745");
                     } else if (evenement.data.statut === 'ERREUR') {
+                        console.error("Détail de l'erreur Worker :", evenement.data.detail);
                         creerBandeauStatut("❌ Erreur de chargement des fichiers de l'IA.", "#dc3545");
                     }
                 };
