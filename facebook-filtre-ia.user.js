@@ -24,7 +24,7 @@
     if (urlActuelle.includes('facebook.com')) {
         
         let compteurMasques = 0;
-        let dictionnaireHaine = ["haine", "débile", "idiot", "nul", "moque", "ferme ta", "fdp", "con ", "connard", "salope"]; // Base hybride de secours
+        let dictionnaireHaine = ["haine", "débile", "idiot", "nul", "moque", "ferme ta", "fdp", "con ", "connard", "salope", "bonjour", "merci", "partager", "répondre", "débile", "idiot"]; // Base hybride de secours
 
         window.addEventListener('load', () => {
             creerBandeauStatut("⏳ Extension v1.12 active sur Facebook : Initialisation de l'IA locale...", "#ff9800");
