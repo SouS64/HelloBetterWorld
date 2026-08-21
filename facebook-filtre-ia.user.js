@@ -1,15 +1,12 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Avancé
 // @namespace    http://tampermonkey.net
-// @version      1.8
+// @version      1.9
 // @description  Filtre intelligent local contre la haine, l'ironie blessante et le spam sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
-// @connect      cdn.jsdelivr.net
-// @connect      huggingface.co
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @require      https://jsdelivr.net
 // ==/UserScript==
 
 (async function() {
@@ -19,7 +16,7 @@
 
     // 1. DÉTECTION PAGE GITHUB
     if (urlActuelle.includes('github.io')) {
-        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.8 est active sur votre page d'accueil.");
+        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.9 est active sur votre page d'accueil.");
         return; 
     }
 
@@ -28,18 +25,28 @@
         let seuilSensibilite = GM_getValue("seuil_sensibilite", 0.65);
         let pipelineAnalyseur = null;
 
-        // Message de démarrage immédiat
-        creerBandeauStatut("⏳ Extension v1.8 active sur Facebook : Initialisation de l'IA locale...", "#ff9800");
+        // Message de démarrage immédiat en orange
+        creerBandeauStatut("⏳ Extension v1.9 active sur Facebook : Initialisation de l'IA locale...", "#ff9800");
 
         async function initIA() {
             try {
-                pipelineAnalyseur = await window.Transformers.pipeline('text-classification', 'Xenova/toxic-bert');
-                creerBandeauStatut("🛡️ Filtre IA v1.8 actif : Votre navigation Facebook est protégée !", "#28a745");
+                // FIX IOS : Importation dynamique moderne pour contourner le blocage de Safari
+                const { pipeline } = await import('https://jsdelivr.net');
+                
+                // Téléchargement du modèle de classification
+                pipelineAnalyseur = await pipeline('text-classification', 'Xenova/toxic-bert');
+                
+                // Si l'IA est prête, le bandeau passe au vert
+                creerBandeauStatut("🛡️ Filtre IA v1.9 actif : Votre navigation Facebook est protégée !", "#28a745");
             } catch (erreur) {
-                creerBandeauStatut("❌ Erreur : Safari bloque le téléchargement automatique de l'IA.", "#dc3545");
+                // Si le téléchargement bloque à cause des sécurités Apple
+                console.error(erreur);
+                creerBandeauStatut("❌ Erreur : Sécurité iOS bloque le chargement de l'IA.", "#dc3545");
             }
         }
-        await initIA();
+        
+        // On lance l'IA sans bloquer l'affichage de la page Facebook
+        setTimeout(initIA, 1000);
     }
 
     // Fonction de création du bandeau d'information
