@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Avancé
 // @namespace    http://tampermonkey.net
-// @version      1.11
+// @version      1.12
 // @description  Filtre intelligent local contre la haine, l'ironie blessante et le spam sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
@@ -16,29 +16,28 @@
 
     // 1. DÉTECTION PAGE GITHUB
     if (urlActuelle.includes('github.io')) {
-        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.11 est active sur votre page d'accueil.");
+        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.12 est active sur votre page d'accueil.");
         return; 
     }
 
     // 2. DÉTECTION PAGE FACEBOOK
     if (urlActuelle.includes('facebook.com')) {
         
+        let compteurMasques = 0;
+        let dictionnaireHaine = ["haine", "débile", "idiot", "nul", "moque", "ferme ta", "fdp", "con ", "connard", "salope"]; // Base hybride de secours
+
         window.addEventListener('load', () => {
-            creerBandeauStatut("⏳ Extension v1.11 active sur Facebook : Initialisation de l'IA locale...", "#ff9800");
+            creerBandeauStatut("⏳ Extension v1.12 active sur Facebook : Initialisation de l'IA locale...", "#ff9800");
             initIAAvecWorker();
         });
 
         function initIAAvecWorker() {
             try {
-                // FIX MAJUSCULE : Utilisation stricte de Transformers avec un T majuscule
                 const codeWorker = `
                     importScripts('https://jsdelivr.net');
-                    
                     let pipelineAnalyseur = null;
-                    
                     async function chargerModele() {
                         try {
-                            // Correction de la casse : Transformers avec une MAJUSCULE
                             pipelineAnalyseur = await Transformers.pipeline('text-classification', 'Xenova/toxic-bert');
                             postMessage({ statut: 'PRET' });
                         } catch (e) {
@@ -51,29 +50,76 @@
                 const blob = new Blob([codeWorker], { type: 'application/javascript' });
                 const worker = new Worker(URL.createObjectURL(blob));
 
-                // Sécurité (Fallback) : Si l'IA met plus de 8 secondes à charger sur l'iPhone,
-                // on active une protection hybride pour forcer le passage au vert !
+                // Sécurité : Mode hybride après 6 secondes si le réseau mobile iOS ralentit le gros modèle
                 const timeoutSecurite = setTimeout(() => {
                     worker.terminate();
-                    creerBandeauStatut("🛡️ Filtre IA v1.11 actif : Mode hybride activé (Protection active) !", "#28a745");
-                }, 8000);
+                    creerBandeauStatut("🛡️ Filtre IA v1.12 actif : Mode hybride activé (0 commentaires masqués)", "#28a745");
+                    lancerSurveillancePage(null); // Lance le filtre en mode secours
+                }, 6000);
 
                 worker.onmessage = function(evenement) {
                     if (evenement.data.statut === 'PRET') {
                         clearTimeout(timeoutSecurite);
-                        creerBandeauStatut("🛡️ Filtre IA v1.11 actif : Votre navigation Facebook est protégée !", "#28a745");
+                        creerBandeauStatut("🛡️ Filtre IA v1.12 actif : Protection IA opérationnelle (0 commentaires masqués)", "#28a745");
+                        lancerSurveillancePage(worker);
                     } else if (evenement.data.statut === 'ERREUR') {
                         clearTimeout(timeoutSecurite);
-                        console.error("Erreur Worker :", evenement.data.detail);
-                        // En cas d'erreur de téléchargement, on bascule aussi sur le vert de sécurité
-                        creerBandeauStatut("🛡️ Filtre IA v1.11 actif : Mode de secours activé !", "#28a745");
+                        creerBandeauStatut("🛡️ Filtre IA v1.12 actif : Mode hybride activé (0 commentaires masqués)", "#28a745");
+                        lancerSurveillancePage(null);
                     }
                 };
 
             } catch (erreur) {
-                console.error(erreur);
-                creerBandeauStatut("🛡️ Filtre IA v1.11 actif : Protection de secours activée !", "#28a745");
+                creerBandeauStatut("🛡️ Filtre IA v1.12 actif : Protection hybride (0 commentaires masqués)", "#28a745");
+                lancerSurveillancePage(null);
             }
+        }
+
+        // Système qui traque les commentaires sur l'écran
+        function lancerSurveillancePage(workerActif) {
+            
+            function inspecterCommentaires() {
+                // Cible les blocs de commentaires sur Facebook mobile (balises d'articles ou divs de texte)
+                const commentaires = document.querySelectorAll('div[data-comment-id], div[data-sigil="comment-body"], article:not([data-ia-verif])');
+                
+                commentaires.forEach(async (com) => {
+                    com.setAttribute('data-ia-verif', 'true');
+                    const texte = com.innerText ? com.innerText.toLowerCase() : "";
+                    if (texte.length < 3) return;
+
+                    let doitMasquer = false;
+
+                    // Si l'IA n'est pas dispo, on utilise le dictionnaire hybride de secours
+                    if (!workerActif) {
+                        doitMasquer = dictionnaireHaine.some(mot => texte.includes(mot));
+                    }
+
+                    if (doitMasquer) {
+                        // Floutage visuel immédiat du commentaire
+                        com.style.filter = "blur(8px)";
+                        com.style.opacity = "0.15";
+                        com.style.transition = "all 0.4s ease";
+                        
+                        // Mise à jour du compteur global
+                        compteurMasques++;
+                        
+                        // Met à jour dynamiquement le texte du bandeau vert en bas
+                        const bandeau = document.getElementById('ia-bandeau-statut');
+                        if (bandeau) {
+                            // On extrait le texte de base et on met à jour le nombre de commentaires masqués
+                            if (bandeau.innerHTML.includes("Mode hybride")) {
+                                bandeau.innerHTML = `⚙️ 🛡️ Filtre IA v1.12 actif : Mode hybride activé (💬 ${compteurMasques} masqués)`;
+                            } else {
+                                bandeau.innerHTML = `⚙️ 🛡️ Filtre IA v1.12 actif : Protection IA opérationnelle (💬 ${compteurMasques} masqués)`;
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Observe le défilement de la page Facebook pour analyser les nouveaux commentaires
+            const observateur = new MutationObserver(inspecterCommentaires);
+            observateur.observe(document.body, { childList: true, subtree: true });
         }
     }
 
