@@ -16,7 +16,7 @@
 
     // 1. DÉTECTION PAGE GITHUB
     if (urlActuelle.includes('github.io')) {
-        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.12 est active sur votre page d'accueil.");
+        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.121 est active sur votre page d'accueil.");
         return; 
     }
 
