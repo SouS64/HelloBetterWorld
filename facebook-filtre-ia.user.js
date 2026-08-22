@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Hybride
 // @namespace    http://tampermonkey.net
-// @version      2.1
+// @version      2.2
 // @description  Filtre local (dictionnaire renforcé + IA embarquée optionnelle via WebLLM) contre la haine, la moquerie et le spam sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
@@ -20,7 +20,7 @@
   // 1. DÉTECTION PAGE GITHUB (inchangé)
   // =========================================================================
   if (urlActuelle.includes('github.io')) {
-    creerBandeauStatut("✅ Ça fonctionne ! L'extension v2.0 est active sur votre page d'accueil.");
+    creerBandeauStatut("✅ Ça fonctionne ! L'extension v2.2 est active sur votre page d'accueil.");
     return;
   }
 
@@ -94,6 +94,101 @@
     "\\btu\\s+(es|est|fais|reste)\\s+(un[e]?\\s+)?(" + adjectifsNegatifs.join("|") + ")\\b"
   );
   const POIDS_MEPRIS_PERSONNEL = 4;
+
+  // -------------------------------------------------------------------------
+  // 2c. JUGEMENTS SANS ARGUMENT ("c'est nul", "n'importe quoi" sans justification)
+  // -------------------------------------------------------------------------
+  // Réglages : mettez ACTIVER_FILTRE_NON_CONSTRUCTIF à false pour désactiver
+  // entièrement cette section sans toucher au reste du script.
+  const ACTIVER_FILTRE_NON_CONSTRUCTIF = true;
+  const SEUIL_NON_CONSTRUCTIF = 3; // score minimum pour flouter (léger, réversible visuellement)
+
+  const marqueursJugementAbsolu = [
+    "n'importe quoi", "aucun sens", "grand n'importe quoi", "toujours les memes",
+    "jamais content", "comme d'habitude", "sans surprise", "evidemment",
+    "typique", "on s'en doutait", "quelle blague", "du grand n'importe quoi",
+  ];
+  const connecteursJustification = [
+    "parce que", "car ", "puisque", "etant donne", "en effet", "notamment",
+    "par exemple", "ce qui explique", "du fait que", "vu que", "sachant que",
+    "d'ailleurs", "preuve en est",
+  ];
+  const MOTS_MAX_SANS_ARGUMENT = 25; // au-delà, on suppose qu'il y a un minimum de développement
+  const POIDS_JUGEMENT_SANS_ARGUMENT = 3;
+
+  function detecterJugementSansArgument(texteOriginal) {
+    const t = normaliserTexte(texteOriginal);
+    const nbMots = t.split(' ').filter(Boolean).length;
+    if (nbMots === 0 || nbMots > MOTS_MAX_SANS_ARGUMENT) return { score: 0, motif: null };
+
+    const contientJugement = marqueursJugementAbsolu.some((m) => t.includes(normaliserTexte(m)));
+    if (!contientJugement) return { score: 0, motif: null };
+
+    const contientJustification = connecteursJustification.some((c) => t.includes(normaliserTexte(c)));
+    if (contientJustification) return { score: 0, motif: null }; // il y a un minimum d'argumentation, on laisse passer
+
+    return { score: POIDS_JUGEMENT_SANS_ARGUMENT, motif: "jugement à l'emporte-pièce sans argument" };
+  }
+
+  // -------------------------------------------------------------------------
+  // 2d. HORS-SUJET PAR RAPPORT AU POST (expérimental, best-effort)
+  // -------------------------------------------------------------------------
+  // ATTENTION (honnêteté technique) : Facebook change régulièrement la
+  // structure de ses pages et obfusque ses classes CSS. Cette fonction tente
+  // de retrouver le texte du post parent via plusieurs sélecteurs connus,
+  // mais elle peut échouer à trouver le post (dans ce cas, elle ne pénalise
+  // simplement rien plutôt que de se tromper) ou devenir obsolète si
+  // Facebook modifie son balisage. Ajustez SELECTEURS_POST si besoin.
+  const SELECTEURS_POST = [
+    '[data-ad-preview="message"]',
+    '[data-ad-comet-preview="message"]',
+    'div[data-testid="post_message"]',
+  ];
+  const MOTS_VIDES = new Set([
+    "le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "mais",
+    "donc", "car", "ni", "que", "qui", "quoi", "est", "sont", "ce", "cette",
+    "ces", "il", "elle", "je", "tu", "nous", "vous", "ils", "elles", "pour",
+    "avec", "sans", "sur", "dans", "par", "pas", "plus", "tres", "bien",
+  ]);
+  const NB_MOTS_SIGNIFICATIFS_MIN = 8; // en dessous, trop court pour juger le sujet fiablement
+  const SEUIL_SIMILARITE_MIN = 0.05;   // en dessous de ce ratio de mots communs, on suppose hors-sujet
+  const POIDS_HORS_SUJET = 3;
+
+  function extraireMotsSignificatifs(texte) {
+    return normaliserTexte(texte)
+      .split(' ')
+      .filter((m) => m.length > 3 && !MOTS_VIDES.has(m));
+  }
+
+  function trouverTextePost(elementCommentaire) {
+    for (const selecteur of SELECTEURS_POST) {
+      const post = elementCommentaire.closest('[role="article"]')?.querySelector(selecteur)
+        || document.querySelector(selecteur);
+      if (post && post.innerText && post.innerText.trim().length > 20) {
+        return post.innerText;
+      }
+    }
+    return null; // pas de post trouvé de façon fiable : on ne pénalise pas
+  }
+
+  function detecterHorsSujet(elementCommentaire, texteCommentaire) {
+    const motsCommentaire = extraireMotsSignificatifs(texteCommentaire);
+    if (motsCommentaire.length < NB_MOTS_SIGNIFICATIFS_MIN) return { score: 0, motif: null };
+
+    const textePost = trouverTextePost(elementCommentaire);
+    if (!textePost) return { score: 0, motif: null }; // pas de référence fiable, on ne juge pas
+
+    const motsPost = new Set(extraireMotsSignificatifs(textePost));
+    if (motsPost.size === 0) return { score: 0, motif: null };
+
+    const intersection = motsCommentaire.filter((m) => motsPost.has(m)).length;
+    const similarite = intersection / motsPost.size;
+
+    if (similarite < SEUIL_SIMILARITE_MIN) {
+      return { score: POIDS_HORS_SUJET, motif: "hors-sujet par rapport au post (best-effort)" };
+    }
+    return { score: 0, motif: null };
+  }
 
   // -------------------------------------------------------------------------
   // 2b. NORMALISATION ANTI-CONTOURNEMENT
@@ -188,7 +283,7 @@
   // 4. INITIALISATION
   // =========================================================================
   window.addEventListener('load', async () => {
-    creerBandeauStatut(`⏳ Extension v2.0 active : chargement du filtre (💬 ${compteurMasques} masqués)…`, "#ff9800");
+    creerBandeauStatut(`⏳ Extension v2.2 active : chargement du filtre (💬 ${compteurMasques} masqués)…`, "#ff9800");
 
     iaLocaleActive = await tenterChargementIALocale();
     majBandeau();
@@ -210,10 +305,10 @@
 
         const texteOriginal = el.innerText;
 
-        // Étape 1 : dictionnaire, toujours exécuté (rapide, fiable, gratuit)
+        // Étape 1 : dictionnaire (haine, racisme, mépris), toujours exécuté
         const { score, motsDetectes } = scoreToxiciteDictionnaire(texteOriginal);
         if (score >= SEUIL_FLOU) {
-          await appliquerFloutage(el, texteOriginal, `Dictionnaire (score ${score}: ${motsDetectes.join(', ')})`);
+          await appliquerFloutage(el, texteOriginal, `Dictionnaire (score ${score}: ${motsDetectes.join(', ')})`, "fort");
           continue;
         }
 
@@ -221,7 +316,19 @@
         if (iaLocaleActive && moteurIA) {
           const estToxique = await classifierAvecIALocale(texteOriginal);
           if (estToxique) {
-            await appliquerFloutage(el, texteOriginal, "IA locale (WebLLM)");
+            await appliquerFloutage(el, texteOriginal, "IA locale (WebLLM)", "fort");
+            continue;
+          }
+        }
+
+        // Étape 3 : contenu non constructif (jugement sans argument / hors-sujet)
+        if (ACTIVER_FILTRE_NON_CONSTRUCTIF) {
+          const jugement = detecterJugementSansArgument(texteOriginal);
+          const horsSujet = detecterHorsSujet(el, texteOriginal);
+          const scoreNonConstructif = jugement.score + horsSujet.score;
+          if (scoreNonConstructif >= SEUIL_NON_CONSTRUCTIF) {
+            const motifs = [jugement.motif, horsSujet.motif].filter(Boolean).join(' + ');
+            await appliquerFloutage(el, texteOriginal, motifs, "leger");
           }
         }
       }
@@ -232,11 +339,16 @@
   // =========================================================================
   // 6. FLOUTAGE + PERSISTANCE
   // =========================================================================
-  async function appliquerFloutage(element, texte, raison) {
+  async function appliquerFloutage(element, texte, raison, intensite = "fort") {
     if (element.style.filter.includes("blur")) return;
 
-    element.style.filter = "blur(7px)";
-    element.style.opacity = "0.15";
+    if (intensite === "leger") {
+      element.style.filter = "blur(3px)";
+      element.style.opacity = "0.45";
+    } else {
+      element.style.filter = "blur(7px)";
+      element.style.opacity = "0.15";
+    }
     element.style.transition = "all 0.3s ease";
 
     compteurMasques++;
@@ -256,7 +368,7 @@
     const bandeau = document.getElementById('ia-bandeau-statut');
     if (!bandeau) return;
     const labelMode = iaLocaleActive ? "Dictionnaire + IA locale" : "Dictionnaire renforcé";
-    bandeau.innerHTML = `⚙️ 🛡️ Filtre v2.0 actif : ${labelMode} (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`;
+    bandeau.innerHTML = `⚙️ 🛡️ Filtre v2.2 actif : ${labelMode} (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`;
     bandeau.style.background = "#28a745";
     bandeau.onclick = (e) => {
       e.stopPropagation();
