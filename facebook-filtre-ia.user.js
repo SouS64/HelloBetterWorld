@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Avancé
 // @namespace    http://tampermonkey.net
-// @version      1.16
-// @description  Filtre intelligent local contre la haine, l'ironie blessante et le spam sur Facebook.
+// @version      1.17
+// @description  Filtre intelligent local avec panneau de configuration pour ajouter vos critères sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
 // @grant        GM_setValue
@@ -16,7 +16,7 @@
 
     // 1. DÉTECTION PAGE GITHUB
     if (urlActuelle.includes('github.io')) {
-        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.16 est active sur votre page d'accueil.");
+        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.17 est active sur votre page d'accueil.");
         return; 
     }
 
@@ -25,71 +25,36 @@
         
         let compteurMasques = 0;
         let historiqueBlocages = [];
-        let sessionIA = null;
-        let dictionnaireHaine = ["débile", "idiot", "nul", "ferme ta", "fdp", "connard", "salope", "cassos", "pauvre naze", "moche", "clown", "gogol"]; 
+        
+        // Charger la liste personnalisée de l'utilisateur, ou mettre une liste par défaut si vide
+        let listeMotsStockes = GM_getValue("mes_criteres_ia", "débile, idiot, nul, fdp, connard, salope, clown, gogol");
+        let dictionnaireHaine = rafraichirDictionnaire(listeMotsStockes);
 
         window.addEventListener('load', () => {
-            creerBandeauStatut("⏳ Extension v1.16 active sur Facebook : Initialisation de l'IA matérielle...", "#ff9800");
-            initIANative();
+            creerBandeauStatut(`🛡️ Filtre IA v1.17 : Actif (💬 ${compteurMasques} masqués) <span id="btn-ouvrir-config" style="text-decoration:underline;margin-left:8px;color:#ffeb3b;">[Régler ⚙️]</span>`, "#28a745");
+            creerPanneauConfigurationVisuel();
+            lancerSurveillancePage();
         });
 
-        async function initIANative() {
-            try {
-                // On vérifie si le système iOS / Safari propose l'accès à l'IA embarquée de l'iPhone
-                if (window.ai && window.ai.languageModel) {
-                    const capabilities = await window.ai.languageModel.capabilities();
-                    
-                    if (capabilities.available !== "no") {
-                        // Initialisation du modèle interne avec un prompt système de modération
-                        sessionIA = await window.ai.languageModel.create({
-                            systemPrompt: "Tu es un modérateur de commentaires Facebook. Analyse le texte fourni. Réponds uniquement par le mot TOXIC s'il contient de la haine, de l'insulte ou de la moquerie agressive, sinon réponds par CLEAN. Ne fais aucune autre phrase."
-                        });
-                        
-                        creerBandeauStatut(`🛡️ Filtre IA v1.16 actif : Protection par l'IA de l'iPhone (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
-                        lancerSurveillancePage(true);
-                        return;
-                    }
-                }
-                
-                // Si l'iPhone n'a pas d'IA active ou disponible dans ses réglages, bascule transparente sur le dictionnaire
-                creerBandeauStatut(`Filtre IA v1.16 actif : Mode hybride (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
-                lancerSurveillancePage(false);
-                
-            } catch (erreur) {
-                console.error("Échec IA native :", erreur);
-                creerBandeauStatut(`Filtre IA v1.16 actif : Mode hybride de secours (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
-                lancerSurveillancePage(false);
-            }
+        function rafraichirDictionnaire(texteBrut) {
+            return texteBrut.split(',').map(mot => mot.trim().toLowerCase()).filter(mot => mot.length > 0);
         }
 
-        function lancerSurveillancePage(iaDisponible) {
+        function lancerSurveillancePage() {
             function inspecterCommentaires() {
                 const elementsTexte = document.querySelectorAll('span:not([data-ia-v]), p:not([data-ia-v]), div[data-sigil="comment-body"]:not([data-ia-v])');
                 
                 elementsTexte.forEach(async (el) => {
                     el.setAttribute('data-ia-v', 'true');
-                    if (!el.innerText || el.innerText.trim().length < 5 || el.children.length > 1) return;
+                    if (!el.innerText || el.innerText.trim().length < 3 || el.children.length > 1) return;
                     
                     const texteOriginal = el.innerText;
                     const texteNettoye = texteOriginal.toLowerCase().trim();
 
-                    // Traitement par le dictionnaire de secours (instantané)
-                    let estToxiqueParMots = dictionnaireHaine.some(mot => texteNettoye.includes(mot));
-                    if (estToxiqueParMots) {
-                        appliquerFloutage(el, texteOriginal, "Dictionnaire de secours");
-                        return;
-                    }
-
-                    // Traitement par l'IA native si elle est réveillée
-                    if (iaDisponible && sessionIA) {
-                        try {
-                            const reponseIA = await sessionIA.prompt(texteOriginal);
-                            if (reponseIA.toUpperCase().includes("TOXIC")) {
-                                appliquerFloutage(el, texteOriginal, "IA Puce Neuronale iPhone");
-                            }
-                        } catch(e) {
-                            // En cas de micro-coupure de la session IA, le script continue sans planter
-                        }
+                    // Traitement par le dictionnaire personnalisé en temps réel
+                    let estToxique = dictionnaireHaine.some(mot => texteNettoye.includes(mot));
+                    if (estToxique) {
+                        appliquerFloutage(el, texteOriginal, "Critère personnalisé");
                     }
                 });
             }
@@ -110,22 +75,67 @@
 
             const bandeau = document.getElementById('ia-bandeau-statut');
             if (bandeau) {
-                const labelMode = sessionIA ? "Protection IA" : "Mode hybride";
-                bandeau.innerHTML = `⚙️ 🛡️ Filtre IA v1.16 actif : ${labelMode} (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`;
+                const zoneBouton = `<span id="btn-ouvrir-config" style="text-decoration:underline;margin-left:8px;color:#ffeb3b;">[Régler ⚙️]</span>`;
+                bandeau.innerHTML = `⚙️ 🛡️ Filtre IA v1.17 : Actif (💬 ${compteurMasques} masqués) ${zoneBouton}`;
+                
+                // Ré-attacher l'événement au bouton après modification du texte
+                document.getElementById('btn-ouvrir-config').onclick = (e) => {
+                    e.stopPropagation();
+                    ouvrirFermerPanneau();
+                };
             }
         }
 
-        window.afficherResumeFiltre = function() {
-            if (historiqueBlocages.length === 0) {
-                alert("📝 Aucun élément n'a encore été masqué par le filtre.");
-                return;
+        // CRÉATION DE L'INTERFACE DE CONFIGURATION SUR L'ÉCRAN
+        function creerPanneauConfigurationVisuel() {
+            if (document.getElementById('ia-panneau-config')) return;
+
+            const panneau = document.createElement('div');
+            panneau.id = 'ia-panneau-config';
+            panneau.style = "display:none; position:fixed; top:70px; left:15px; right:15px; background:white; border-radius:12px; border:2px solid #1877f2; padding:15px; z-index:99999999; box-shadow:0 10px 25px rgba(0,0,0,0.3); font-family:sans-serif; color:#333; box-sizing:border-box;";
+            
+            panneau.innerHTML = `
+                <h3 style="margin-top:0;color:#1877f2;font-size:16px;display:flex;justify-content:between;align-items:center;">
+                    🛠️ Vos critères de blocage
+                </h3>
+                <p style="font-size:11px;color:#666;margin-bottom:10px;">Séparez vos mots ou expressions par des virgules (ex: débile, idiot, pub) :</p>
+                <textarea id="ia-txt-mots" style="width:100%; height:80px; padding:8px; border-radius:6px; border:1px solid #ccc; font-family:sans-serif; font-size:13px; box-sizing:border-box; resize:none;">${listeMotsStockes}</textarea>
+                <div style="margin-top:12px; display:flex; gap:10px;">
+                    <button id="ia-btn-sauver" style="flex:1; padding:10px; background:#28a745; color:white; border:none; border-radius:6px; font-weight:bold; font-size:13px;">💾 Sauvegarder</button>
+                    <button id="ia-btn-voir-historique" style="flex:1; padding:10px; background:#6c757d; color:white; border:none; border-radius:6px; font-weight:bold; font-size:13px;">📝 Voir l'historique</button>
+                </div>
+            `;
+            document.body.appendChild(panneau);
+
+            // Actions des boutons
+            document.getElementById('ia-btn-sauver').onclick = () => {
+                const nouveauTexte = document.getElementById('ia-txt-mots').value;
+                GM_setValue("mes_criteres_ia", nouveauTexte); // Sauvegarde locale définitive
+                listeMotsStockes = nouveauTexte;
+                dictionnaireHaine = rafraichirDictionnaire(nouveauTexte); // Applique immédiatement
+                alert("✅ Vos critères ont été enregistrés avec succès ! La page va s'actualiser.");
+                window.location.reload();
+            };
+
+            document.getElementById('ia-btn-voir-historique').onclick = () => {
+                if (historiqueBlocages.length === 0) {
+                    alert("📝 Aucun élément n'a encore été masqué.");
+                    return;
+                }
+                let résumé = `📝 ÉLÉMENTS MASQUÉS DURANT CETTE SESSION :\n\n`;
+                historiqueBlocages.forEach((item, index) => {
+                    résumé += `${index + 1}) "${item.texte.substring(0, 60)}..."\n\n`;
+                });
+                alert(résumé);
+            };
+        }
+
+        function ouvrirFermerPanneau() {
+            const p = document.getElementById('ia-panneau-config');
+            if (p) {
+                p.style.display = p.style.display === 'none' ? 'block' : 'none';
             }
-            let texteResume = `📝 RÉSUMÉ DES ÉLÉMENTS MASQUÉS :\n\n`;
-            historiqueBlocages.forEach((item, index) => {
-                texteResume += `${index + 1}) [${item.raison}] "${item.texte.substring(0, 60)}..."\n\n`;
-            });
-            alert(texteResume);
-        };
+        }
     }
 
     function creerBandeauStatut(message, couleurFond = "#1877f2") {
@@ -136,12 +146,15 @@
             document.body.insertBefore(bandeau, document.body.firstChild);
         }
         bandeau.innerHTML = "⚙️ " + message;
-        bandeau.style = "display:block !important; width:100% !important; padding:15px !important; background:" + couleurFond + " !important; color:white !important; text-align:center !important; font-family:sans-serif !important; font-size:14px !important; font-weight:bold !important; z-index:9999999 !important; box-shadow:0 2px 5px rgba(0,0,0,0.2) !important; box-sizing:border-box !important; cursor:pointer;";
+        bandeau.style = "display:block !important; width:100% !important; padding:15px !important; background:" + couleurFond + " !important; color:white !important; text-align:center !important; font-family:sans-serif !important; font-size:14px !important; font-weight:bold !important; z-index:9999999 !important; box-shadow:0 2px 5px rgba(0,0,0,0.2) !important; box-sizing:border-box !important;";
         
-        if (couleurFond === "#28a745") {
-            bandeau.onclick = (e) => {
+        // Active le bouton au chargement initial
+        const btn = document.getElementById('btn-ouvrir-config');
+        if (btn) {
+            btn.onclick = (e) => {
                 e.stopPropagation();
-                window.afficherResumeFiltre();
+                const p = document.getElementById('ia-panneau-config');
+                if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
             };
         }
     }
