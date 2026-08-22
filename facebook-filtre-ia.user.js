@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Hybride
 // @namespace    http://tampermonkey.net
-// @version      2.0
+// @version      2.1
 // @description  Filtre local (dictionnaire renforcé + IA embarquée optionnelle via WebLLM) contre la haine, la moquerie et le spam sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
@@ -54,9 +54,46 @@
     "ferme ta": 4, "ta gueule": 5, "casse toi": 3, "dégage": 2,
     // moquerie
     "mdr t": 1, "grosse merde": 5, "sous merde": 5,
+
+    // --- racisme / xénophobie / discrimination ---
+    // Volontairement non-exhaustif : on couvre les tournures les plus
+    // fréquentes plutôt qu'une liste complète d'insultes ethniques, pour
+    // éviter de maintenir ici un catalogue trop détaillé. Complétez cette
+    // section vous-même si besoin, en gardant le même format {terme: poids}.
+    "sale race": 6, "sale arabe": 6, "sale noir": 6, "sale juif": 6,
+    "retourne dans ton pays": 6, "rentre chez toi": 5, "pas de chez nous": 4,
+    "race de": 5, "bougnoule": 6, "négro": 6, "youpin": 6, "chintok": 6,
+    "sale étranger": 5, "envahisseurs": 4, "grand remplacement": 5,
+
+    // --- déshumanisation ---
+    "sous-homme": 6, "sous homme": 6, "pas un être humain": 5,
+    "des animaux": 4, "de la vermine": 6, "des rats": 5, "des cafards": 5,
+    "des parasites": 5,
+
+    // --- mépris personnel direct (formules figées) ---
+    "tu ne vaux rien": 5, "tu es une honte": 5, "quelle honte": 3,
+    "tu fais pitié": 4, "tu me dégoûtes": 4, "tu es minable": 4,
+    "tu es lamentable": 4, "personne ne t'aime": 5, "tu sers à rien": 5,
+    "va crever": 6, "j'espère que tu": 3,
   };
 
   const SEUIL_FLOU = 3; // score minimum pour masquer un message
+
+  // -------------------------------------------------------------------------
+  // 2a-bis. MOTIFS DE PHRASES (regex) POUR LE MÉPRIS PERSONNEL
+  // Capture des tournures du type "tu es <adjectif négatif>" que le simple
+  // dictionnaire par mot-clé rate souvent, car c'est la combinaison qui
+  // rend la phrase méprisante, pas un mot isolé.
+  // -------------------------------------------------------------------------
+  const adjectifsNegatifs = [
+    "nul", "nulle", "ridicule", "pathetique", "minable", "lamentable",
+    "inutile", "stupide", "bete", "conne", "con", "moche", "degueulasse",
+    "insignifiant", "mediocre",
+  ];
+  const regexMeprisPersonnel = new RegExp(
+    "\\btu\\s+(es|est|fais|reste)\\s+(un[e]?\\s+)?(" + adjectifsNegatifs.join("|") + ")\\b"
+  );
+  const POIDS_MEPRIS_PERSONNEL = 4;
 
   // -------------------------------------------------------------------------
   // 2b. NORMALISATION ANTI-CONTOURNEMENT
@@ -83,6 +120,11 @@
         score += poids;
         motsDetectes.push(mot);
       }
+    }
+    // Motifs de phrases ("tu es nul", "tu fais pitié", etc.)
+    if (regexMeprisPersonnel.test(texteNormalise)) {
+      score += POIDS_MEPRIS_PERSONNEL;
+      motsDetectes.push("mépris personnel (motif de phrase)");
     }
     return { score, motsDetectes };
   }
