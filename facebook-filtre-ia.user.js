@@ -1,148 +1,242 @@
 // ==UserScript==
-// @name         Filtre Facebook IA Avancé
+// @name         Filtre Facebook IA Hybride
 // @namespace    http://tampermonkey.net
-// @version      1.16
-// @description  Filtre intelligent local contre la haine, l'ironie blessante et le spam sur Facebook.
+// @version      2.0
+// @description  Filtre local (dictionnaire renforcé + IA embarquée optionnelle via WebLLM) contre la haine, la moquerie et le spam sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @connect      raw.githubusercontent.com
+// @connect      huggingface.co
 // ==/UserScript==
-
-(async function() {
-    'use strict';
-
-    const urlActuelle = window.location.href;
-
-    // 1. DÉTECTION PAGE GITHUB
-    if (urlActuelle.includes('github.io')) {
-        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.16 est active sur votre page d'accueil.");
-        return; 
+ 
+(async function () {
+  'use strict';
+ 
+  const urlActuelle = window.location.href;
+ 
+  // =========================================================================
+  // 1. DÉTECTION PAGE GITHUB (inchangé)
+  // =========================================================================
+  if (urlActuelle.includes('github.io')) {
+    creerBandeauStatut("✅ Ça fonctionne ! L'extension v2.0 est active sur votre page d'accueil.");
+    return;
+  }
+ 
+  if (!urlActuelle.includes('facebook.com')) return;
+ 
+  // =========================================================================
+  // 2. ÉTAT GLOBAL
+  // =========================================================================
+  let compteurMasques = Number(await GM_getValue('compteurMasques', 0)) || 0;
+  let historiqueBlocages = [];
+  let moteurIA = null;          // instance WebLLM si dispo
+  let iaLocaleActive = false;   // true seulement si WebLLM a réellement chargé
+ 
+  // -------------------------------------------------------------------------
+  // 2a. DICTIONNAIRE PONDÉRÉ
+  // Chaque mot a un "poids". Score cumulé >= SEUIL_FLOU => on masque.
+  // -------------------------------------------------------------------------
+  const dictionnaireHaine = {
+    // insultes directes fortes
+    "connard": 5, "connasse": 5, "salope": 5, "pute": 5, "enculé": 5, "fdp": 5,
+    "batard": 4, "bâtard": 4, "ordure": 4, "raclure": 4,
+    // insultes modérées
+    "débile": 3, "idiot": 3, "abruti": 3, "crétin": 3, "gogol": 3, "attardé": 4,
+    "cassos": 3, "naze": 2, "moche": 2, "clown": 2, "nul": 2, "pathétique": 2,
+    // agressivité / rejet
+    "ferme ta": 4, "ta gueule": 5, "casse toi": 3, "dégage": 2,
+    // moquerie
+    "mdr t": 1, "grosse merde": 5, "sous merde": 5,
+  };
+ 
+  const SEUIL_FLOU = 3; // score minimum pour masquer un message
+ 
+  // -------------------------------------------------------------------------
+  // 2b. NORMALISATION ANTI-CONTOURNEMENT
+  // Gère accents, leetspeak (0/1/3/4/5/7/@/$) et lettres répétées ("coooonnard")
+  // -------------------------------------------------------------------------
+  function normaliserTexte(texte) {
+    let t = texte.toLowerCase();
+    t = t.normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // enlève les accents
+    const leet = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's' };
+    t = t.replace(/[013457@$]/g, (c) => leet[c] || c);
+    t = t.replace(/(.)\1{2,}/g, '$1$1'); // "coooonnard" -> "coonnard" (garde 2 max)
+    t = t.replace(/[^a-z\s]/g, ' ');     // enlève ponctuation résiduelle
+    t = t.replace(/\s+/g, ' ').trim();
+    return t;
+  }
+ 
+  function scoreToxiciteDictionnaire(texteOriginal) {
+    const texteNormalise = normaliserTexte(texteOriginal);
+    let score = 0;
+    let motsDetectes = [];
+    for (const [mot, poids] of Object.entries(dictionnaireHaine)) {
+      const motNormalise = normaliserTexte(mot);
+      if (texteNormalise.includes(motNormalise)) {
+        score += poids;
+        motsDetectes.push(mot);
+      }
     }
-
-    // 2. DÉTECTION PAGE FACEBOOK
-    if (urlActuelle.includes('facebook.com')) {
-        
-        let compteurMasques = 0;
-        let historiqueBlocages = [];
-        let sessionIA = null;
-        let dictionnaireHaine = ["débile", "idiot", "nul", "ferme ta", "fdp", "connard", "salope", "cassos", "pauvre naze", "moche", "clown", "gogol"]; 
-
-        window.addEventListener('load', () => {
-            creerBandeauStatut("⏳ Extension v1.16 active sur Facebook : Initialisation de l'IA matérielle...", "#ff9800");
-            initIANative();
-        });
-
-        async function initIANative() {
-            try {
-                // On vérifie si le système iOS / Safari propose l'accès à l'IA embarquée de l'iPhone
-                if (window.ai && window.ai.languageModel) {
-                    const capabilities = await window.ai.languageModel.capabilities();
-                    
-                    if (capabilities.available !== "no") {
-                        // Initialisation du modèle interne avec un prompt système de modération
-                        sessionIA = await window.ai.languageModel.create({
-                            systemPrompt: "Tu es un modérateur de commentaires Facebook. Analyse le texte fourni. Réponds uniquement par le mot TOXIC s'il contient de la haine, de l'insulte ou de la moquerie agressive, sinon réponds par CLEAN. Ne fais aucune autre phrase."
-                        });
-                        
-                        creerBandeauStatut(`🛡️ Filtre IA v1.16 actif : Protection par l'IA de l'iPhone (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
-                        lancerSurveillancePage(true);
-                        return;
-                    }
-                }
-                
-                // Si l'iPhone n'a pas d'IA active ou disponible dans ses réglages, bascule transparente sur le dictionnaire
-                creerBandeauStatut(`Filtre IA v1.16 actif : Mode hybride (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
-                lancerSurveillancePage(false);
-                
-            } catch (erreur) {
-                console.error("Échec IA native :", erreur);
-                creerBandeauStatut(`Filtre IA v1.16 actif : Mode hybride de secours (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
-                lancerSurveillancePage(false);
-            }
-        }
-
-        function lancerSurveillancePage(iaDisponible) {
-            function inspecterCommentaires() {
-                const elementsTexte = document.querySelectorAll('span:not([data-ia-v]), p:not([data-ia-v]), div[data-sigil="comment-body"]:not([data-ia-v])');
-                
-                elementsTexte.forEach(async (el) => {
-                    el.setAttribute('data-ia-v', 'true');
-                    if (!el.innerText || el.innerText.trim().length < 5 || el.children.length > 1) return;
-                    
-                    const texteOriginal = el.innerText;
-                    const texteNettoye = texteOriginal.toLowerCase().trim();
-
-                    // Traitement par le dictionnaire de secours (instantané)
-                    let estToxiqueParMots = dictionnaireHaine.some(mot => texteNettoye.includes(mot));
-                    if (estToxiqueParMots) {
-                        appliquerFloutage(el, texteOriginal, "Dictionnaire de secours");
-                        return;
-                    }
-
-                    // Traitement par l'IA native si elle est réveillée
-                    if (iaDisponible && sessionIA) {
-                        try {
-                            const reponseIA = await sessionIA.prompt(texteOriginal);
-                            if (reponseIA.toUpperCase().includes("TOXIC")) {
-                                appliquerFloutage(el, texteOriginal, "IA Puce Neuronale iPhone");
-                            }
-                        } catch(e) {
-                            // En cas de micro-coupure de la session IA, le script continue sans planter
-                        }
-                    }
-                });
-            }
-            setInterval(inspecterCommentaires, 1500);
-        }
-
-        function appliquerFloutage(element, texte, raison) {
-            if (element.style.filter.includes("blur")) return;
-
-            element.style.filter = "blur(7px)";
-            element.style.opacity = "0.15";
-            element.style.transition = "all 0.3s ease";
-            
-            compteurMasques++;
-            if (!historiqueBlocages.some(h => h.texte === texte)) {
-                historiqueBlocages.push({ texte: texte, raison: raison });
-            }
-
-            const bandeau = document.getElementById('ia-bandeau-statut');
-            if (bandeau) {
-                const labelMode = sessionIA ? "Protection IA" : "Mode hybride";
-                bandeau.innerHTML = `⚙️ 🛡️ Filtre IA v1.16 actif : ${labelMode} (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`;
-            }
-        }
-
-        window.afficherResumeFiltre = function() {
-            if (historiqueBlocages.length === 0) {
-                alert("📝 Aucun élément n'a encore été masqué par le filtre.");
-                return;
-            }
-            let texteResume = `📝 RÉSUMÉ DES ÉLÉMENTS MASQUÉS :\n\n`;
-            historiqueBlocages.forEach((item, index) => {
-                texteResume += `${index + 1}) [${item.raison}] "${item.texte.substring(0, 60)}..."\n\n`;
-            });
-            alert(texteResume);
-        };
+    return { score, motsDetectes };
+  }
+ 
+  // =========================================================================
+  // 3. TENTATIVE DE CHARGEMENT D'UNE IA LOCALE (WebLLM, expérimental)
+  // -------------------------------------------------------------------------
+  // ATTENTION (honnêteté technique) :
+  //  - Nécessite WebGPU (navigator.gpu). Absent sur Safari/iOS aujourd'hui,
+  //    et Chrome sur iPhone utilise aussi WebKit (donc pas de WebGPU non plus).
+  //  - Même quand WebGPU existe (PC / Android Chrome récents), le CSP strict
+  //    de facebook.com peut bloquer le chargement de la librairie et/ou le
+  //    téléchargement du modèle. Dans ce cas, l'échec est silencieux et le
+  //    script continue sur le dictionnaire seul, sans jamais planter.
+  // =========================================================================
+  async function tenterChargementIALocale() {
+    if (!('gpu' in navigator)) {
+      return false; // pas de WebGPU dispo (cas iPhone systématiquement)
     }
-
-    function creerBandeauStatut(message, couleurFond = "#1877f2") {
-        let bandeau = document.getElementById('ia-bandeau-statut');
-        if (!bandeau) {
-            bandeau = document.createElement('div');
-            bandeau.id = 'ia-bandeau-statut';
-            document.body.insertBefore(bandeau, document.body.firstChild);
-        }
-        bandeau.innerHTML = "⚙️ " + message;
-        bandeau.style = "display:block !important; width:100% !important; padding:15px !important; background:" + couleurFond + " !important; color:white !important; text-align:center !important; font-family:sans-serif !important; font-size:14px !important; font-weight:bold !important; z-index:9999999 !important; box-shadow:0 2px 5px rgba(0,0,0,0.2) !important; box-sizing:border-box !important; cursor:pointer;";
-        
-        if (couleurFond === "#28a745") {
-            bandeau.onclick = (e) => {
-                e.stopPropagation();
-                window.afficherResumeFiltre();
-            };
-        }
+    try {
+      const webllm = await import('https://esm.run/@mlc-ai/web-llm');
+      // Modèle volontairement très petit pour rester utilisable sur mobile/PC modeste.
+      // Si ce modèle disparaît du catalogue MLC, remplacez son identifiant
+      // (liste à jour sur https://mlc.ai/web-llm/).
+      const NOM_MODELE = "Qwen2.5-0.5B-Instruct-q4f16_1-MLC";
+ 
+      moteurIA = await webllm.CreateMLCEngine(NOM_MODELE, {
+        initProgressCallback: () => {}, // silencieux ; pas de log intrusif
+      });
+ 
+      return true;
+    } catch (erreur) {
+      console.warn("[Filtre FB] IA locale WebLLM indisponible, repli sur le dictionnaire :", erreur);
+      moteurIA = null;
+      return false;
     }
+  }
+ 
+  async function classifierAvecIALocale(texte) {
+    if (!moteurIA) return null;
+    try {
+      const reponse = await moteurIA.chat.completions.create({
+        messages: [
+          {
+            role: "system",
+            content: "Tu es un modérateur de commentaires Facebook. Réponds uniquement par TOXIC si le message contient de la haine, une insulte ou une moquerie agressive, sinon réponds CLEAN. Un seul mot, rien d'autre.",
+          },
+          { role: "user", content: texte },
+        ],
+        temperature: 0,
+        max_tokens: 4,
+      });
+      const contenu = reponse.choices?.[0]?.message?.content?.toUpperCase() || "";
+      return contenu.includes("TOXIC");
+    } catch (erreur) {
+      return null; // en cas d'erreur ponctuelle, on ne bloque pas le flux
+    }
+  }
+ 
+  // =========================================================================
+  // 4. INITIALISATION
+  // =========================================================================
+  window.addEventListener('load', async () => {
+    creerBandeauStatut(`⏳ Extension v2.0 active : chargement du filtre (💬 ${compteurMasques} masqués)…`, "#ff9800");
+ 
+    iaLocaleActive = await tenterChargementIALocale();
+    majBandeau();
+    lancerSurveillancePage();
+  });
+ 
+  // =========================================================================
+  // 5. SURVEILLANCE DE LA PAGE
+  // =========================================================================
+  function lancerSurveillancePage() {
+    async function inspecterCommentaires() {
+      const elementsTexte = document.querySelectorAll(
+        'span:not([data-ia-v]), p:not([data-ia-v]), div[data-sigil="comment-body"]:not([data-ia-v])'
+      );
+ 
+      for (const el of elementsTexte) {
+        el.setAttribute('data-ia-v', 'true');
+        if (!el.innerText || el.innerText.trim().length < 5 || el.children.length > 1) continue;
+ 
+        const texteOriginal = el.innerText;
+ 
+        // Étape 1 : dictionnaire, toujours exécuté (rapide, fiable, gratuit)
+        const { score, motsDetectes } = scoreToxiciteDictionnaire(texteOriginal);
+        if (score >= SEUIL_FLOU) {
+          await appliquerFloutage(el, texteOriginal, `Dictionnaire (score ${score}: ${motsDetectes.join(', ')})`);
+          continue;
+        }
+ 
+        // Étape 2 : IA locale, seulement si elle a réellement chargé
+        if (iaLocaleActive && moteurIA) {
+          const estToxique = await classifierAvecIALocale(texteOriginal);
+          if (estToxique) {
+            await appliquerFloutage(el, texteOriginal, "IA locale (WebLLM)");
+          }
+        }
+      }
+    }
+    setInterval(inspecterCommentaires, 1500);
+  }
+ 
+  // =========================================================================
+  // 6. FLOUTAGE + PERSISTANCE
+  // =========================================================================
+  async function appliquerFloutage(element, texte, raison) {
+    if (element.style.filter.includes("blur")) return;
+ 
+    element.style.filter = "blur(7px)";
+    element.style.opacity = "0.15";
+    element.style.transition = "all 0.3s ease";
+ 
+    compteurMasques++;
+    await GM_setValue('compteurMasques', compteurMasques);
+ 
+    if (!historiqueBlocages.some((h) => h.texte === texte)) {
+      historiqueBlocages.push({ texte, raison });
+    }
+    majBandeau();
+  }
+ 
+  function majBandeau() {
+    const bandeau = document.getElementById('ia-bandeau-statut');
+    if (!bandeau) return;
+    const labelMode = iaLocaleActive ? "Dictionnaire + IA locale" : "Dictionnaire renforcé";
+    bandeau.innerHTML = `⚙️ 🛡️ Filtre v2.0 actif : ${labelMode} (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`;
+    bandeau.style.background = "#28a745";
+    bandeau.onclick = (e) => {
+      e.stopPropagation();
+      window.afficherResumeFiltre();
+    };
+  }
+ 
+  window.afficherResumeFiltre = function () {
+    if (historiqueBlocages.length === 0) {
+      alert("📝 Aucun élément n'a encore été masqué par le filtre.");
+      return;
+    }
+    let texteResume = `📝 RÉSUMÉ DES ÉLÉMENTS MASQUÉS :\n\n`;
+    historiqueBlocages.forEach((item, index) => {
+      texteResume += `${index + 1}) [${item.raison}] "${item.texte.substring(0, 60)}..."\n\n`;
+    });
+    alert(texteResume);
+  };
+ 
+  // =========================================================================
+  // 7. BANDEAU DE STATUT
+  // =========================================================================
+  function creerBandeauStatut(message, couleurFond = "#1877f2") {
+    let bandeau = document.getElementById('ia-bandeau-statut');
+    if (!bandeau) {
+      bandeau = document.createElement('div');
+      bandeau.id = 'ia-bandeau-statut';
+      document.body.insertBefore(bandeau, document.body.firstChild);
+    }
+    bandeau.innerHTML = "⚙️ " + message;
+    bandeau.style = "display:block !important; width:100% !important; padding:15px !important; background:" + couleurFond + " !important; color:white !important; text-align:center !important; font-family:sans-serif !important; font-size:14px !important; font-weight:bold !important; z-index:9999999 !important; box-shadow:0 2px 5px rgba(0,0,0,0.2) !important; box-sizing:border-box !important; cursor:pointer;";
+  }
 })();
+ 
