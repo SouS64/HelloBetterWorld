@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Avancé
 // @namespace    http://tampermonkey.net
-// @version      1.15
+// @version      1.16
 // @description  Filtre intelligent local contre la haine, l'ironie blessante et le spam sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
@@ -16,7 +16,7 @@
 
     // 1. DÉTECTION PAGE GITHUB
     if (urlActuelle.includes('github.io')) {
-        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.15 est active sur votre page d'accueil.");
+        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.16 est active sur votre page d'accueil.");
         return; 
     }
 
@@ -25,112 +25,71 @@
         
         let compteurMasques = 0;
         let historiqueBlocages = [];
-        let modeIAOperationnel = false;
+        let sessionIA = null;
         let dictionnaireHaine = ["débile", "idiot", "nul", "ferme ta", "fdp", "connard", "salope", "cassos", "pauvre naze", "moche", "clown", "gogol"]; 
-        let workerIA = null;
 
         window.addEventListener('load', () => {
-            creerBandeauStatut("⏳ Extension v1.15 active sur Facebook : Initialisation de l'IA locale...", "#ff9800");
-            initIAAvecWorker();
+            creerBandeauStatut("⏳ Extension v1.16 active sur Facebook : Initialisation de l'IA matérielle...", "#ff9800");
+            initIANative();
         });
 
-        function initIAAvecWorker() {
+        async function initIANative() {
             try {
-                // Version optimisée pour iOS : réduction de la taille des buffers et allocation mémoire directe
-                const codeWorker = `
-                    importScripts('https://jsdelivr.net');
+                // On vérifie si le système iOS / Safari propose l'accès à l'IA embarquée de l'iPhone
+                if (window.ai && window.ai.languageModel) {
+                    const capabilities = await window.ai.languageModel.capabilities();
                     
-                    let pipelineAnalyseur = null;
-                    
-                    async function chargerModere() {
-                        try {
-                            // On configure Transformers pour utiliser des modèles très légers et configurés pour le cache mobile
-                            transformers.env.allowLocalModels = false;
-                            
-                            // Chargement d'un modèle ultra-quantifié (très léger en mémoire pour smartphone)
-                            pipelineAnalyseur = await Transformers.pipeline('text-classification', 'Xenova/distilbert-base-uncased-finetuned-sst-2-english');
-                            
-                            postMessage({ statut: 'PRET' });
-                        } catch (e) {
-                            postMessage({ statut: 'ERREUR', detail: e.message });
-                        }
+                    if (capabilities.available !== "no") {
+                        // Initialisation du modèle interne avec un prompt système de modération
+                        sessionIA = await window.ai.languageModel.create({
+                            systemPrompt: "Tu es un modérateur de commentaires Facebook. Analyse le texte fourni. Réponds uniquement par le mot TOXIC s'il contient de la haine, de l'insulte ou de la moquerie agressive, sinon réponds par CLEAN. Ne fais aucune autre phrase."
+                        });
+                        
+                        creerBandeauStatut(`🛡️ Filtre IA v1.16 actif : Protection par l'IA de l'iPhone (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
+                        lancerSurveillancePage(true);
+                        return;
                     }
-                    chargerModere();
-
-                    onmessage = async function(e) {
-                        if (!pipelineAnalyseur) return;
-                        try {
-                            const resultats = await pipelineAnalyseur(e.data.texte);
-                            if (resultats && resultats[0]) {
-                                postMessage({ 
-                                    statut: 'ANALYSE', 
-                                    id: e.data.id,
-                                    label: resultats[0].label, 
-                                    score: resultats[0].score 
-                                });
-                            }
-                        } catch(err) {}
-                    };
-                `;
-
-                const blob = new Blob([codeWorker], { type: 'application/javascript' });
-                workerIA = new Worker(URL.createObjectURL(blob));
-
-                // On augmente le délai d'attente à 15 secondes car le premier téléchargement sur iPhone requiert du temps
-                const timeoutSecurite = setTimeout(() => {
-                    if (!modeIAOperationnel) {
-                        console.log("iOS trop lent pour charger l'IA complète, maintien du mode hybride.");
-                        creerBandeauStatut(`Filtre IA v1.15 actif : Mode hybride (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
-                    }
-                }, 15000);
-
-                workerIA.onmessage = function(evenement) {
-                    if (evenement.data.statut === 'PRET') {
-                        clearTimeout(timeoutSecurite);
-                        modeIAOperationnel = true;
-                        creerBandeauStatut(`🛡️ Filtre IA v1.15 actif : Protection IA opérationnelle (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
-                    } 
-                    else if (evenement.data.statut === 'ANALYSE') {
-                        const el = document.querySelector('[data-ia-id="' + evenement.data.id + '"]');
-                        if (!el) return;
-
-                        // Le modèle sst-2 utilise 'NEGATIVE' pour désigner les contenus toxiques/haineux/négatifs
-                        if ((evenement.data.label === 'NEGATIVE' || evenement.data.label === 'toxic') && evenement.data.score > 0.75) {
-                            appliquerFloutage(el, el.innerText, "Intelligence Artificielle Locale");
-                        }
-                    }
-                };
-
-                // Lance la surveillance immédiatement, elle profitera de l'IA dès qu'elle se réveillera
-                lancerSurveillancePage();
-
+                }
+                
+                // Si l'iPhone n'a pas d'IA active ou disponible dans ses réglages, bascule transparente sur le dictionnaire
+                creerBandeauStatut(`Filtre IA v1.16 actif : Mode hybride (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
+                lancerSurveillancePage(false);
+                
             } catch (erreur) {
-                lancerSurveillancePage();
+                console.error("Échec IA native :", erreur);
+                creerBandeauStatut(`Filtre IA v1.16 actif : Mode hybride de secours (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
+                lancerSurveillancePage(false);
             }
         }
 
-        function lancerSurveillancePage() {
+        function lancerSurveillancePage(iaDisponible) {
             function inspecterCommentaires() {
                 const elementsTexte = document.querySelectorAll('span:not([data-ia-v]), p:not([data-ia-v]), div[data-sigil="comment-body"]:not([data-ia-v])');
                 
-                elementsTexte.forEach((el) => {
+                elementsTexte.forEach(async (el) => {
                     el.setAttribute('data-ia-v', 'true');
                     if (!el.innerText || el.innerText.trim().length < 5 || el.children.length > 1) return;
                     
                     const texteOriginal = el.innerText;
                     const texteNettoye = texteOriginal.toLowerCase().trim();
 
-                    // Si l'IA a fini de démarrer, on lui envoie le texte en arrière-plan
-                    if (modeIAOperationnel && workerIA) {
-                        const uniqueId = "id_" + Math.random().toString(36).substr(2, 9);
-                        el.setAttribute('data-ia-id', uniqueId);
-                        workerIA.postMessage({ texte: texteOriginal, id: uniqueId });
+                    // Traitement par le dictionnaire de secours (instantané)
+                    let estToxiqueParMots = dictionnaireHaine.some(mot => texteNettoye.includes(mot));
+                    if (estToxiqueParMots) {
+                        appliquerFloutage(el, texteOriginal, "Dictionnaire de secours");
+                        return;
                     }
 
-                    // Le dictionnaire tourne TOUJOURS en tâche de fond pour une réactivité instantanée
-                    let estToxique = dictionnaireHaine.some(mot => texteNettoye.includes(mot));
-                    if (estToxique) {
-                        appliquerFloutage(el, texteOriginal, "Dictionnaire de secours");
+                    // Traitement par l'IA native si elle est réveillée
+                    if (iaDisponible && sessionIA) {
+                        try {
+                            const reponseIA = await sessionIA.prompt(texteOriginal);
+                            if (reponseIA.toUpperCase().includes("TOXIC")) {
+                                appliquerFloutage(el, texteOriginal, "IA Puce Neuronale iPhone");
+                            }
+                        } catch(e) {
+                            // En cas de micro-coupure de la session IA, le script continue sans planter
+                        }
                     }
                 });
             }
@@ -138,7 +97,6 @@
         }
 
         function appliquerFloutage(element, texte, raison) {
-            // Évite de flouter deux fois le même élément
             if (element.style.filter.includes("blur")) return;
 
             element.style.filter = "blur(7px)";
@@ -146,15 +104,14 @@
             element.style.transition = "all 0.3s ease";
             
             compteurMasques++;
-            // On vérifie si la phrase n'est pas déjà dans l'historique
             if (!historiqueBlocages.some(h => h.texte === texte)) {
                 historiqueBlocages.push({ texte: texte, raison: raison });
             }
 
             const bandeau = document.getElementById('ia-bandeau-statut');
             if (bandeau) {
-                const labelMode = modeIAOperationnel ? "Protection IA" : "Mode hybride";
-                bandeau.innerHTML = `⚙️ 🛡️ Filtre IA v1.15 actif : ${labelMode} (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`;
+                const labelMode = sessionIA ? "Protection IA" : "Mode hybride";
+                bandeau.innerHTML = `⚙️ 🛡️ Filtre IA v1.16 actif : ${labelMode} (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`;
             }
         }
 
