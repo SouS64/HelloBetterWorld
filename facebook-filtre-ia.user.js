@@ -1,14 +1,18 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Hybride
 // @namespace    http://tampermonkey.net
-// @version      2.2
-// @description  Filtre local (dictionnaire renforcé + IA embarquée optionnelle via WebLLM) contre la haine, la moquerie et le spam sur Facebook.
+// @version      2.4
+// @description  Filtre local (dictionnaire renforcé + IA externe Groq optionnelle) contre la haine, la moquerie et le spam sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
+// @grant        GM_registerMenuCommand
 // @connect      raw.githubusercontent.com
 // @connect      huggingface.co
+// @connect      api.groq.com
 // ==/UserScript==
 
 (async function () {
@@ -20,7 +24,7 @@
   // 1. DÉTECTION PAGE GITHUB (inchangé)
   // =========================================================================
   if (urlActuelle.includes('github.io')) {
-    creerBandeauStatut("✅ Ça fonctionne ! L'extension v2.2 est active sur votre page d'accueil.");
+    creerBandeauStatut("✅ Ça fonctionne ! L'extension v2.4 est active sur votre page d'accueil.");
     return;
   }
 
@@ -75,6 +79,11 @@
     "tu fais pitié": 4, "tu me dégoûtes": 4, "tu es minable": 4,
     "tu es lamentable": 4, "personne ne t'aime": 5, "tu sers à rien": 5,
     "va crever": 6, "j'espère que tu": 3,
+
+    // --- moquerie sarcastique / dévalorisation par ironie ---
+    "neuneu": 3, "neu neu": 3, "fut fut": 3, "futfut": 3, "pas futé": 3,
+    "encore un genie": 3, "encore une lumiere": 3, "quel genie": 3,
+    "bravo champion": 2, "bien joue einstein": 3,
   };
 
   const SEUIL_FLOU = 3; // score minimum pour masquer un message
@@ -205,13 +214,24 @@
     return t;
   }
 
+  // Cache des regex par mot (créées une seule fois, pas à chaque appel)
+  const regexParMotCache = new Map();
+  function regexPourMot(motNormalise) {
+    if (!regexParMotCache.has(motNormalise)) {
+      const echappe = motNormalise.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      regexParMotCache.set(motNormalise, new RegExp('\\b' + echappe + '\\b'));
+    }
+    return regexParMotCache.get(motNormalise);
+  }
+
   function scoreToxiciteDictionnaire(texteOriginal) {
     const texteNormalise = normaliserTexte(texteOriginal);
     let score = 0;
     let motsDetectes = [];
     for (const [mot, poids] of Object.entries(dictionnaireHaine)) {
       const motNormalise = normaliserTexte(mot);
-      if (texteNormalise.includes(motNormalise)) {
+      // Limites de mots strictes : "trace de" ne doit PAS matcher "race de".
+      if (regexPourMot(motNormalise).test(texteNormalise)) {
         score += poids;
         motsDetectes.push(mot);
       }
@@ -280,11 +300,186 @@
   }
 
   // =========================================================================
+  // 3bis. CLASSIFICATION PAR IA EXTERNE (Groq, gratuit avec quota)
+  // -------------------------------------------------------------------------
+  // La clé API n'est PAS codée en dur : elle est demandée une seule fois à
+  // chaque utilisateur (via une boîte de dialogue), puis stockée localement
+  // avec GM_setValue — donc propre à chaque installation du script, jamais
+  // partagée entre utilisateurs, jamais visible dans le code téléchargé.
+  // =========================================================================
+  let GROQ_API_KEY = '';
+  const GROQ_MODELE = "llama-3.1-8b-instant";
+  const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
+
+  async function chargerOuDemanderCleAPI() {
+    try {
+      const cleExistante = (await GM_getValue('groqApiKey', '')) || '';
+      if (cleExistante) return cleExistante;
+
+      const maintenant = Date.now();
+      const declineJusqua = Number(await GM_getValue('groqApiKeyDeclineJusqua', 0)) || 0;
+      if (maintenant < declineJusqua) return ''; // décliné récemment, on ne relance pas la demande à chaque page
+
+      const saisie = prompt(
+        "🤖 Filtre Facebook IA\n\n" +
+        "Pour activer l'analyse IA avancée (gratuite), collez votre clé API Groq ci-dessous.\n\n" +
+        "Pas de clé ? Créez-en une gratuitement sur console.groq.com (aucune carte bancaire requise). " +
+        "Sans clé, le filtre continue de fonctionner normalement avec son dictionnaire local.\n\n" +
+        "Laissez vide pour ignorer (on ne vous redemandera pas avant quelques jours)."
+      );
+
+      if (saisie && saisie.trim()) {
+        const cle = saisie.trim();
+        await GM_setValue('groqApiKey', cle);
+        await GM_setValue('groqApiKeyDeclineJusqua', 0);
+        return cle;
+      } else {
+        await GM_setValue('groqApiKeyDeclineJusqua', maintenant + 3 * 24 * 60 * 60 * 1000); // re-demande dans 3 jours
+        return '';
+      }
+    } catch (erreur) {
+      console.warn("[Filtre FB] Impossible de charger/demander la clé API Groq :", erreur);
+      return '';
+    }
+  }
+
+  // Reconfiguration à tout moment via le menu de l'extension (disponible sur
+  // Tampermonkey desktop ; absent sur Tampermonkey iOS/Safari — sur iPhone,
+  // effacez la valeur 'groqApiKey' depuis l'app Tampermonkey > le script >
+  // Storage pour redéclencher la demande au prochain chargement de page).
+  try {
+    GM_registerMenuCommand("🔑 Configurer la clé API Groq", async () => {
+      const cleActuelle = (await GM_getValue('groqApiKey', '')) || '';
+      const nouvelleCle = prompt("Collez votre clé API Groq (laissez vide pour désactiver cette fonctionnalité) :", cleActuelle);
+      if (nouvelleCle !== null) {
+        await GM_setValue('groqApiKey', nouvelleCle.trim());
+        await GM_setValue('groqApiKeyDeclineJusqua', 0);
+        alert("✅ Clé enregistrée. Rechargez la page Facebook pour l'appliquer.");
+      }
+    });
+  } catch (erreur) {
+    // GM_registerMenuCommand indisponible sur cette plateforme : pas grave, silencieux.
+  }
+
+  // Marge de sécurité volontaire sous la limite Groq réelle (14 400/jour) :
+  // avec des lots de 10 commentaires, 500 appels/jour = jusqu'à 5000
+  // commentaires classés par jour, largement suffisant en usage personnel.
+  const QUOTA_MAX_APPELS_PAR_JOUR = 500;
+  const TAILLE_LOT_MAX = 10;
+  const INTERVALLE_TRAITEMENT_LOT_MS = 5000; // largement sous la limite 30 req/min de Groq
+
+  const PROMPT_SYSTEME_CLASSIFICATION = `Tu es un modérateur de commentaires Facebook. On te donne une liste de commentaires au format JSON (tableau de chaînes). Pour CHAQUE commentaire, réponds par une étiquette :
+- "HAINE" : insulte, racisme, propos dégradant ou déshumanisant
+- "NON_CONSTRUCTIF" : moquerie sarcastique envers une personne (ex: "quel génie", "neuneu", "un fut fut" au sens ironique), jugement à l'emporte-pièce sans argument, ou commentaire hors-sujet
+- "CLEAN" : commentaire normal, argumenté, ou critique légitime sans mépris
+
+Réponds UNIQUEMENT avec un tableau JSON d'étiquettes, dans le même ordre que les commentaires reçus, sans aucun autre texte. Exemple de réponse : ["CLEAN","HAINE","NON_CONSTRUCTIF"]`;
+
+  let fileAttenteIA = []; // { element, texte }
+  let quotaAppelsAujourdhui = 0;
+  let dateQuotaCourante = new Date().toDateString();
+
+  async function chargerQuota() {
+    try {
+      const dateSauvegardee = await GM_getValue('quotaGroqDate', null);
+      const aujourdhui = new Date().toDateString();
+      if (dateSauvegardee !== aujourdhui) {
+        // Nouveau jour : on repart à zéro.
+        quotaAppelsAujourdhui = 0;
+        dateQuotaCourante = aujourdhui;
+        await GM_setValue('quotaGroqDate', aujourdhui);
+        await GM_setValue('quotaGroqCompteur', 0);
+      } else {
+        quotaAppelsAujourdhui = Number(await GM_getValue('quotaGroqCompteur', 0)) || 0;
+      }
+    } catch (erreur) {
+      // Si GM_getValue échoue, on continue avec le compteur en mémoire uniquement.
+    }
+  }
+
+  async function incrementerQuota() {
+    quotaAppelsAujourdhui++;
+    try {
+      await GM_setValue('quotaGroqCompteur', quotaAppelsAujourdhui);
+    } catch (erreur) {
+      // Pas grave si la persistance échoue : le compteur en mémoire suffit pour cette session.
+    }
+  }
+
+  function ajouterALaFileIA(element, texte) {
+    if (!GROQ_API_KEY) return; // pas configuré
+    const nbMots = texte.trim().split(/\s+/).length;
+    if (nbMots < 3 || nbMots > 60) return; // trop court pour être ambigu, ou trop long (coûte cher en tokens)
+    if (fileAttenteIA.some((item) => item.element === element)) return;
+    fileAttenteIA.push({ element, texte });
+  }
+
+  function classifierLotAvecGroq(textes) {
+    return new Promise((resolve) => {
+      GM_xmlhttpRequest({
+        method: "POST",
+        url: GROQ_ENDPOINT,
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": "Bearer " + GROQ_API_KEY,
+        },
+        data: JSON.stringify({
+          model: GROQ_MODELE,
+          temperature: 0,
+          max_tokens: 300,
+          messages: [
+            { role: "system", content: PROMPT_SYSTEME_CLASSIFICATION },
+            { role: "user", content: JSON.stringify(textes) },
+          ],
+        }),
+        timeout: 15000,
+        onload: (reponse) => {
+          try {
+            const data = JSON.parse(reponse.responseText);
+            const contenu = data.choices?.[0]?.message?.content || "[]";
+            const labels = JSON.parse(contenu.trim());
+            resolve(Array.isArray(labels) ? labels : null);
+          } catch (erreur) {
+            console.warn("[Filtre FB] Réponse Groq illisible, lot ignoré :", erreur);
+            resolve(null);
+          }
+        },
+        onerror: () => resolve(null),
+        ontimeout: () => resolve(null),
+      });
+    });
+  }
+
+  async function traiterFileIA() {
+    if (fileAttenteIA.length === 0) return;
+    if (!GROQ_API_KEY) return;
+
+    await chargerQuota();
+    if (quotaAppelsAujourdhui >= QUOTA_MAX_APPELS_PAR_JOUR) return; // quota épuisé pour aujourd'hui, on n'appelle plus
+
+    const lot = fileAttenteIA.splice(0, TAILLE_LOT_MAX);
+    const resultats = await classifierLotAvecGroq(lot.map((item) => item.texte));
+    if (!resultats || resultats.length !== lot.length) return; // échec ou réponse incohérente : on abandonne ce lot sans planter
+
+    await incrementerQuota();
+
+    for (let i = 0; i < lot.length; i++) {
+      const label = resultats[i];
+      if (label === "HAINE") {
+        await appliquerFloutage(lot[i].element, lot[i].texte, "IA externe (Groq) : haine/insulte", "fort");
+      } else if (label === "NON_CONSTRUCTIF") {
+        await appliquerFloutage(lot[i].element, lot[i].texte, "IA externe (Groq) : non constructif", "leger");
+      }
+    }
+  }
+
+  // =========================================================================
   // 4. INITIALISATION
   // =========================================================================
   window.addEventListener('load', async () => {
-    creerBandeauStatut(`⏳ Extension v2.2 active : chargement du filtre (💬 ${compteurMasques} masqués)…`, "#ff9800");
+    creerBandeauStatut(`⏳ Extension v2.4 active : chargement du filtre (💬 ${compteurMasques} masqués)…`, "#ff9800");
 
+    GROQ_API_KEY = await chargerOuDemanderCleAPI();
     iaLocaleActive = await tenterChargementIALocale();
     majBandeau();
     lancerSurveillancePage();
@@ -321,7 +516,8 @@
           }
         }
 
-        // Étape 3 : contenu non constructif (jugement sans argument / hors-sujet)
+        // Étape 3 : contenu non constructif local (jugement sans argument / hors-sujet)
+        let dejaClasse = false;
         if (ACTIVER_FILTRE_NON_CONSTRUCTIF) {
           const jugement = detecterJugementSansArgument(texteOriginal);
           const horsSujet = detecterHorsSujet(el, texteOriginal);
@@ -329,11 +525,21 @@
           if (scoreNonConstructif >= SEUIL_NON_CONSTRUCTIF) {
             const motifs = [jugement.motif, horsSujet.motif].filter(Boolean).join(' + ');
             await appliquerFloutage(el, texteOriginal, motifs, "leger");
+            dejaClasse = true;
           }
+        }
+
+        // Étape 4 : rien de local ne s'est déclenché → on met en file pour l'IA
+        // externe Groq, qui peut attraper les cas subtils (sarcasme, ironie
+        // du type "neuneu"/"un fut fut"/"encore un génie") que les règles
+        // locales ratent. Traité par lots toutes les 5 secondes, pas ici.
+        if (!dejaClasse) {
+          ajouterALaFileIA(el, texteOriginal);
         }
       }
     }
     setInterval(inspecterCommentaires, 1500);
+    setInterval(traiterFileIA, INTERVALLE_TRAITEMENT_LOT_MS);
   }
 
   // =========================================================================
@@ -367,8 +573,11 @@
   function majBandeau() {
     const bandeau = document.getElementById('ia-bandeau-statut');
     if (!bandeau) return;
-    const labelMode = iaLocaleActive ? "Dictionnaire + IA locale" : "Dictionnaire renforcé";
-    bandeau.innerHTML = `⚙️ 🛡️ Filtre v2.2 actif : ${labelMode} (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`;
+    let labelMode = iaLocaleActive ? "Dictionnaire + IA locale" : "Dictionnaire renforcé";
+    if (GROQ_API_KEY) {
+      labelMode += ` + Groq (${quotaAppelsAujourdhui}/${QUOTA_MAX_APPELS_PAR_JOUR})`;
+    }
+    bandeau.innerHTML = `⚙️ 🛡️ Filtre v2.4 actif : ${labelMode} (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`;
     bandeau.style.background = "#28a745";
     bandeau.onclick = (e) => {
       e.stopPropagation();
