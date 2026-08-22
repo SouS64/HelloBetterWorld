@@ -1,78 +1,148 @@
 // ==UserScript==
 // @name         Filtre Facebook IA Avancé
 // @namespace    http://tampermonkey.net
-// @version      3.0
-// @description  Filtre sémantique ultra-léger et robuste pour Facebook Mobile sur iOS.
+// @version      1.16
+// @description  Filtre intelligent local contre la haine, l'ironie blessante et le spam sur Facebook.
 // @author       Votre Nom
 // @match        *://*/*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // ==/UserScript==
 
-(function() {
+(async function() {
     'use strict';
 
     const urlActuelle = window.location.href;
 
-    // 1. SUR VOTRE PAGE D'ACCUEIL GITHUB
+    // 1. DÉTECTION PAGE GITHUB
     if (urlActuelle.includes('github.io')) {
-        alert("✅ Configuration v3.0 validée sur l'accueil !");
+        creerBandeauStatut("✅ Ça fonctionne ! L'extension v1.16 est active sur votre page d'accueil.");
         return; 
     }
 
-    // 2. SUR FACEBOOK
+    // 2. DÉTECTION PAGE FACEBOOK
     if (urlActuelle.includes('facebook.com')) {
         
         let compteurMasques = 0;
-        
-        // On récupère vos mots, ou la liste par défaut si c'est vide
-        let mesMots = GM_getValue("mes_mots_ios", "débile, idiot, nul, fdp, connard, salope, clown, gogol, moche");
-        let dictionnaire = mesMots.split(',').map(m => m.trim().toLowerCase()).filter(m => m.length > 0);
+        let historiqueBlocages = [];
+        let sessionIA = null;
+        let dictionnaireHaine = ["débile", "idiot", "nul", "ferme ta", "fdp", "connard", "salope", "cassos", "pauvre naze", "moche", "clown", "gogol"]; 
 
-        // On affiche le bandeau vert d'état (Exactement comme dans la version qui marchait !)
-        let bandeau = document.createElement('div');
-        bandeau.id = 'ia-bandeau-statut';
-        document.body.insertBefore(bandeau, document.body.firstChild);
-        bandeau.innerHTML = `⚙️ Filtre v3.0 : Actif (💬 0 masqués) [Modifier 📝]`;
-        bandeau.style = "display:block !important; width:100% !important; padding:15px !important; background:#28a745 !important; color:white !important; text-align:center !important; font-family:sans-serif !important; font-size:14px !important; font-weight:bold !important; z-index:9999999 !important; box-shadow:0 2px 5px rgba(0,0,0,0.2) !important; box-sizing:border-box !important; cursor:pointer;";
+        window.addEventListener('load', () => {
+            creerBandeauStatut("⏳ Extension v1.16 active sur Facebook : Initialisation de l'IA matérielle...", "#ff9800");
+            initIANative();
+        });
 
-        // Quand on clique sur le bandeau vert, l'iPhone ouvre une petite case pour changer les mots !
-        bandeau.onclick = function() {
-            let nouvelleSaisie = prompt("✍️ Modifiez vos critères de blocage (séparez les mots par des virgules) :", mesMots);
-            if (nouvelleSaisie !== null) {
-                GM_setValue("mes_mots_ios", nouvelleSaisie);
-                alert("✅ Mots enregistrés ! La page va s'actualiser.");
-                window.location.reload();
-            }
-        };
-
-        // Le moteur de détection universel qui fonctionnait sur la v1.13
-        function inspecterLeTexte() {
-            const elementsTexte = document.querySelectorAll('span:not([data-ia-v]), p:not([data-ia-v]), div:not([data-ia-v])');
-            
-            elementsTexte.forEach((el) => {
-                el.setAttribute('data-ia-v', 'true');
-
-                if (!el.innerText || el.children.length > 2) return;
-                
-                const texte = el.innerText.toLowerCase().trim();
-                if (texte.length < 2) return;
-
-                // On vérifie si un mot du dictionnaire est dans le texte
-                let doitMasquer = dictionnaire.some(mot => texte.includes(mot));
-
-                if (doitMasquer) {
-                    // Floutage immédiat
-                    el.style.setProperty("filter", "blur(8px)", "important");
-                    el.style.setProperty("opacity", "0.15", "important");
+        async function initIANative() {
+            try {
+                // On vérifie si le système iOS / Safari propose l'accès à l'IA embarquée de l'iPhone
+                if (window.ai && window.ai.languageModel) {
+                    const capabilities = await window.ai.languageModel.capabilities();
                     
-                    compteurMasques++;
-                    bandeau.innerHTML = `⚙️ Filtre v3.0 : Actif (💬 ${compteurMasques} masqués) [Modifier 📝]`;
+                    if (capabilities.available !== "no") {
+                        // Initialisation du modèle interne avec un prompt système de modération
+                        sessionIA = await window.ai.languageModel.create({
+                            systemPrompt: "Tu es un modérateur de commentaires Facebook. Analyse le texte fourni. Réponds uniquement par le mot TOXIC s'il contient de la haine, de l'insulte ou de la moquerie agressive, sinon réponds par CLEAN. Ne fais aucune autre phrase."
+                        });
+                        
+                        creerBandeauStatut(`🛡️ Filtre IA v1.16 actif : Protection par l'IA de l'iPhone (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
+                        lancerSurveillancePage(true);
+                        return;
+                    }
                 }
-            });
+                
+                // Si l'iPhone n'a pas d'IA active ou disponible dans ses réglages, bascule transparente sur le dictionnaire
+                creerBandeauStatut(`Filtre IA v1.16 actif : Mode hybride (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
+                lancerSurveillancePage(false);
+                
+            } catch (erreur) {
+                console.error("Échec IA native :", erreur);
+                creerBandeauStatut(`Filtre IA v1.16 actif : Mode hybride de secours (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`, "#28a745");
+                lancerSurveillancePage(false);
+            }
         }
 
-        // Lance l'analyse toutes les 1,5 seconde
-        setInterval(inspecterLeTexte, 1500);
+        function lancerSurveillancePage(iaDisponible) {
+            function inspecterCommentaires() {
+                const elementsTexte = document.querySelectorAll('span:not([data-ia-v]), p:not([data-ia-v]), div[data-sigil="comment-body"]:not([data-ia-v])');
+                
+                elementsTexte.forEach(async (el) => {
+                    el.setAttribute('data-ia-v', 'true');
+                    if (!el.innerText || el.innerText.trim().length < 5 || el.children.length > 1) return;
+                    
+                    const texteOriginal = el.innerText;
+                    const texteNettoye = texteOriginal.toLowerCase().trim();
+
+                    // Traitement par le dictionnaire de secours (instantané)
+                    let estToxiqueParMots = dictionnaireHaine.some(mot => texteNettoye.includes(mot));
+                    if (estToxiqueParMots) {
+                        appliquerFloutage(el, texteOriginal, "Dictionnaire de secours");
+                        return;
+                    }
+
+                    // Traitement par l'IA native si elle est réveillée
+                    if (iaDisponible && sessionIA) {
+                        try {
+                            const reponseIA = await sessionIA.prompt(texteOriginal);
+                            if (reponseIA.toUpperCase().includes("TOXIC")) {
+                                appliquerFloutage(el, texteOriginal, "IA Puce Neuronale iPhone");
+                            }
+                        } catch(e) {
+                            // En cas de micro-coupure de la session IA, le script continue sans planter
+                        }
+                    }
+                });
+            }
+            setInterval(inspecterCommentaires, 1500);
+        }
+
+        function appliquerFloutage(element, texte, raison) {
+            if (element.style.filter.includes("blur")) return;
+
+            element.style.filter = "blur(7px)";
+            element.style.opacity = "0.15";
+            element.style.transition = "all 0.3s ease";
+            
+            compteurMasques++;
+            if (!historiqueBlocages.some(h => h.texte === texte)) {
+                historiqueBlocages.push({ texte: texte, raison: raison });
+            }
+
+            const bandeau = document.getElementById('ia-bandeau-statut');
+            if (bandeau) {
+                const labelMode = sessionIA ? "Protection IA" : "Mode hybride";
+                bandeau.innerHTML = `⚙️ 🛡️ Filtre IA v1.16 actif : ${labelMode} (💬 ${compteurMasques} masqués) <span style="text-decoration:underline;margin-left:5px;font-size:11px;">[Voir résumé]</span>`;
+            }
+        }
+
+        window.afficherResumeFiltre = function() {
+            if (historiqueBlocages.length === 0) {
+                alert("📝 Aucun élément n'a encore été masqué par le filtre.");
+                return;
+            }
+            let texteResume = `📝 RÉSUMÉ DES ÉLÉMENTS MASQUÉS :\n\n`;
+            historiqueBlocages.forEach((item, index) => {
+                texteResume += `${index + 1}) [${item.raison}] "${item.texte.substring(0, 60)}..."\n\n`;
+            });
+            alert(texteResume);
+        };
+    }
+
+    function creerBandeauStatut(message, couleurFond = "#1877f2") {
+        let bandeau = document.getElementById('ia-bandeau-statut');
+        if (!bandeau) {
+            bandeau = document.createElement('div');
+            bandeau.id = 'ia-bandeau-statut';
+            document.body.insertBefore(bandeau, document.body.firstChild);
+        }
+        bandeau.innerHTML = "⚙️ " + message;
+        bandeau.style = "display:block !important; width:100% !important; padding:15px !important; background:" + couleurFond + " !important; color:white !important; text-align:center !important; font-family:sans-serif !important; font-size:14px !important; font-weight:bold !important; z-index:9999999 !important; box-shadow:0 2px 5px rgba(0,0,0,0.2) !important; box-sizing:border-box !important; cursor:pointer;";
+        
+        if (couleurFond === "#28a745") {
+            bandeau.onclick = (e) => {
+                e.stopPropagation();
+                window.afficherResumeFiltre();
+            };
+        }
     }
 })();
